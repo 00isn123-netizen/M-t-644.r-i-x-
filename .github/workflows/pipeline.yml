@@ -1,1 +1,314 @@
+name: Matrix AV1 Encoder
 
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'Video URL — anibd.app link OR direct MKV/MP4'
+        required: true
+      episode:
+        description: 'Episode number (anibd.app downloads only)'
+        default: ''
+      season:
+        description: 'Season number (anibd.app downloads only)'
+        default: '1'
+      crf:
+        description: 'CRF value (lower = better quality, 23–55)'
+        default: '50'
+      preset:
+        description: 'SVT-AV1 preset (0=slowest/best, 13=fastest)'
+        default: '4'
+      output_name:
+        description: 'Output filename (without extension)'
+        default: 'encoded'
+      chunk_count:
+        description: 'Number of chunks to split into (more = more parallelism)'
+        default: '10'
+
+permissions:
+  actions: write
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  PYTHON_VERSION: '3.12'
+
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  split-video : Download + slice into N keyframe-aligned chunks            ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+  split-video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      matrix_json: ${{ steps.set-matrix.outputs.matrix_json }}
+      chunk_count: ${{ steps.set-matrix.outputs.chunk_count }}
+    steps:
+
+      - name: Checkout pipeline scripts
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-jellyfin-ffmpeg7-${{ runner.os }}
+
+      - name: Install ffmpeg (Jellyfin build — includes SVT-AV1)
+        run: |
+          curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
+            | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/jellyfin.gpg
+          echo "deb [arch=amd64] https://repo.jellyfin.org/ubuntu noble main" \
+            | sudo tee /etc/apt/sources.list.d/jellyfin.list
+          sudo apt-get update -q
+          sudo apt-get install -y jellyfin-ffmpeg7
+          echo "/usr/lib/jellyfin-ffmpeg" >> $GITHUB_PATH
+
+      - name: Verify ffmpeg + svtav1
+        run: ffmpeg -encoders 2>/dev/null | grep svtav1
+
+      # ── Download via download.py (anibd.app or direct curl) ──────────────
+      - name: Download
+        env:
+          EPISODE: ${{ github.event.inputs.episode }}
+          SEASON:  ${{ github.event.inputs.season }}
+        run: |
+          python3 download.py \
+            "${{ github.event.inputs.video_url }}" \
+            --output source.mkv \
+            $( [ -n "$EPISODE" ] && echo "--episode $EPISODE" ) \
+            --season "${SEASON:-1}"
+
+      # ── Split via split.py ────────────────────────────────────────────────
+      - name: Slice (${{ github.event.inputs.chunk_count }} chunks, keyframe-aligned)
+        id: set-matrix
+        run: |
+          python3 split.py source.mkv \
+            --chunks "${{ github.event.inputs.chunk_count }}" \
+            --print-matrix
+
+      - name: Upload raw chunks
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-chunks
+          path: part_*.mkv
+          retention-days: 1
+
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  encode-parts : SVT-AV1 encode — one runner per chunk (matrix)            ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+  encode-parts:
+    needs: split-video
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        part: ${{ fromJson(needs.split-video.outputs.matrix_json) }}
+    steps:
+
+      - name: Checkout pipeline scripts
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-jellyfin-ffmpeg7-${{ runner.os }}
+
+      - name: Install ffmpeg
+        run: |
+          curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
+            | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/jellyfin.gpg
+          echo "deb [arch=amd64] https://repo.jellyfin.org/ubuntu noble main" \
+            | sudo tee /etc/apt/sources.list.d/jellyfin.list
+          sudo apt-get update -q
+          sudo apt-get install -y jellyfin-ffmpeg7
+          echo "/usr/lib/jellyfin-ffmpeg" >> $GITHUB_PATH
+
+      - name: Verify ffmpeg + svtav1
+        run: ffmpeg -encoders 2>/dev/null | grep svtav1
+
+      - name: Download chunk
+        uses: actions/download-artifact@v4
+        with:
+          name: raw-chunks
+
+      # ── Encode single chunk via encode.py ─────────────────────────────────
+      - name: Encode ${{ matrix.part }}
+        run: |
+          PART="${{ matrix.part }}"
+          PART_ID="${PART%.mkv}"
+          OUTNAME="${PART_ID}-encoded.mkv"
+          START_TIME=$(date +%s)
+
+          # Run encode.py in single-chunk mode (writes to cwd)
+          python3 encode.py "$PART" \
+            --crf     "${{ github.event.inputs.crf }}" \
+            --preset  "${{ github.event.inputs.preset }}" \
+            --out-dir "." &
+          ENCODE_PID=$!
+
+          # Log progress every 20 s while encode runs
+          while kill -0 $ENCODE_PID 2>/dev/null; do
+            sleep 20
+            PROG_FILE="/tmp/.prog_${PART_ID}.txt"
+            [ ! -f "$PROG_FILE" ] && continue
+
+            FRAME=$(grep "^frame="      "$PROG_FILE" | tail -1 | cut -d= -f2 | tr -d ' ')
+            SPEED=$(grep "^speed="      "$PROG_FILE" | tail -1 | cut -d= -f2 | tr -d ' x')
+            SIZE=$(grep  "^total_size=" "$PROG_FILE" | tail -1 | cut -d= -f2 | tr -d ' ')
+            ELAPSED=$(($(date +%s) - START_TIME))
+
+            FRAME=${FRAME:-0}; SPEED=${SPEED:-0}; SIZE=${SIZE:-0}
+
+            python3 encode.py --log-progress \
+              "{\"progress\":0,\"speed\":${SPEED},\"eta_seconds\":0,\"size_bytes\":${SIZE},\"finished\":false}" \
+              --part-id "$PART_ID"
+          done
+
+          wait $ENCODE_PID
+          EXIT_CODE=$?
+          [ $EXIT_CODE -ne 0 ] && { echo "encode.py failed (exit $EXIT_CODE)"; exit $EXIT_CODE; }
+
+          # Final snapshot
+          ELAPSED=$(($(date +%s) - START_TIME))
+          FINAL_SIZE=$(stat -c%s "$OUTNAME" 2>/dev/null || echo 0)
+          python3 encode.py --log-progress \
+            "{\"progress\":100.0,\"speed\":0,\"eta_seconds\":0,\"size_bytes\":$FINAL_SIZE,\"finished\":true}" \
+            --part-id "$PART_ID"
+
+      - name: Set safe artifact name
+        id: art
+        run: |
+          SAFE="${{ matrix.part }}"
+          SAFE="${SAFE%.mkv}"
+          echo "name=encoded-${SAFE}" >> $GITHUB_OUTPUT
+
+      - name: Upload encoded chunk
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.art.outputs.name }}
+          path: "*-encoded.mkv"
+          retention-days: 1
+
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  monitor : Poll GitHub API every 30 s, print per-chunk job status          ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+  monitor:
+    needs: split-video
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+
+      - name: Checkout pipeline scripts
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Watch encode progress (GitHub API mode)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID:   ${{ github.run_id }}
+          REPO:     ${{ github.repository }}
+          CHUNKS:   ${{ needs.split-video.outputs.matrix_json }}
+        run: python3 monitor.py --mode github
+
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  merge-video : Verify, concatenate, upload final MKV                      ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+  merge-video:
+    needs: [split-video, encode-parts]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+
+      - name: Checkout pipeline scripts
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-jellyfin-ffmpeg7-${{ runner.os }}
+
+      - name: Install ffmpeg
+        run: |
+          curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
+            | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/jellyfin.gpg
+          echo "deb [arch=amd64] https://repo.jellyfin.org/ubuntu noble main" \
+            | sudo tee /etc/apt/sources.list.d/jellyfin.list
+          sudo apt-get update -q
+          sudo apt-get install -y jellyfin-ffmpeg7
+          echo "/usr/lib/jellyfin-ffmpeg" >> $GITHUB_PATH
+
+      - name: Download all encoded chunks
+        uses: actions/download-artifact@v4
+        with:
+          path: encoded-parts
+          pattern: encoded-*
+          merge-multiple: true
+
+      # ── Merge via merge.py ────────────────────────────────────────────────
+      - name: Merge chunks → final MKV
+        run: |
+          python3 merge.py \
+            --output   "${{ github.event.inputs.output_name }}" \
+            --enc-dir  encoded-parts \
+            --expected "${{ needs.split-video.outputs.chunk_count }}" \
+            --crf      "${{ github.event.inputs.crf }}" \
+            --preset   "${{ github.event.inputs.preset }}"
+
+      - name: Upload final result
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-result
+          path: "${{ github.event.inputs.output_name }}.mkv"
+
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  cleanup : Delete intermediate artifacts via cleanup.py                   ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+  cleanup:
+    needs: merge-video
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+
+      - name: Checkout pipeline scripts
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Delete intermediate artifacts
+        env:
+          GH_TOKEN:           ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY:  ${{ github.repository }}
+          GITHUB_RUN_ID:      ${{ github.run_id }}
+        run: python3 cleanup.py --github
