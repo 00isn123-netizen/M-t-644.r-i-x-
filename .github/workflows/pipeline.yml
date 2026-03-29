@@ -23,7 +23,7 @@ on:
         default: 'encoded'
       chunk_count:
         description: 'Number of chunks to split into (more = more parallelism)'
-        default: '10'
+        default: '19'
 
 permissions:
   actions: write
