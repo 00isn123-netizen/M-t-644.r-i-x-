@@ -399,36 +399,12 @@ jobs:
 
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  monitor : Poll GitHub API every 30 s for per-chunk job status            ║
+# ║  monitor-and-merge : Poll encode jobs, then merge chunks → final MKV      ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
-  monitor:
+  monitor-and-merge:
     needs: split-video
     runs-on: ubuntu-latest
-    timeout-minutes: 180
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: 📊 Watch Encode Progress
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_ID:   ${{ github.run_id }}
-          REPO:     ${{ github.repository }}
-          CHUNKS:   ${{ needs.split-video.outputs.matrix_json }}
-        run: python3 monitor.py --mode github
-
-
-# ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  merge-video : Verify → concat → remux → VMAF → upload → TG report       ║
-# ╚═══════════════════════════════════════════════════════════════════════════╝
-  merge-video:
-    needs: [split-video, encode-parts]
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 240
 
     steps:
       - uses: actions/checkout@v4
@@ -500,6 +476,16 @@ jobs:
           key: tg-session-${{ steps.lane.outputs.name }}
           restore-keys: tg-session-
 
+      # ── Watch encode-parts via GitHub API ─────────────────────────────
+      - name: 📊 Watch Encode Progress
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID:   ${{ github.run_id }}
+          REPO:     ${{ github.repository }}
+          CHUNKS:   ${{ needs.split-video.outputs.matrix_json }}
+        run: python3 monitor.py --mode github
+
+      # ── Download all encoded chunks once monitor exits cleanly ────────
       - name: 📥 Download All Encoded Chunks
         uses: actions/download-artifact@v4
         with:
@@ -590,7 +576,7 @@ jobs:
 # ║  cleanup : Delete intermediate artifacts                                  ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
   cleanup:
-    needs: merge-video
+    needs: monitor-and-merge
     runs-on: ubuntu-latest
     if: always()
 
@@ -613,7 +599,7 @@ jobs:
 # ║  notify-failure : Send TG alert if any step failed                        ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
   notify-failure:
-    needs: [split-video, encode-parts, merge-video]
+    needs: [split-video, encode-parts, monitor-and-merge]
     runs-on: ubuntu-latest
     if: failure()
 
@@ -630,7 +616,7 @@ jobs:
           TG_CHAT_ID:        ${{ secrets.TG_CHAT_ID }}
           DOWNLOAD_OUTCOME:  ${{ needs.split-video.result }}
           ENCODE_OUTCOME:    ${{ needs.encode-parts.result }}
-          MERGE_OUTCOME:     ${{ needs.merge-video.result }}
+          MERGE_OUTCOME:     ${{ needs.monitor-and-merge.result }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_RUN_ID:     ${{ github.run_id }}
