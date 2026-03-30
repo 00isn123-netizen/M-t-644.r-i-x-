@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 utils.py — Shared helpers: ffmpeg wrappers, ANSI colours, formatters.
 """
@@ -23,16 +22,16 @@ YL  = "\033[93m"
 RD  = "\033[91m"
 
 # ─── Dependency checks ────────────────────────────────────────────────────────
+
 def check_ffmpeg() -> None:
-    """Exit with a clear message if ffmpeg/ffprobe are not on PATH."""
     for tool in (FFMPEG, FFPROBE):
         if shutil.which(tool) is None:
             print(f"{RD}Error: '{tool}' is not installed or not in PATH.{R}")
             sys.exit(1)
 
 # ─── ffprobe helpers ──────────────────────────────────────────────────────────
+
 def get_duration(path: Path) -> float:
-    """Return video duration in seconds."""
     result = subprocess.run(
         [FFPROBE, "-v", "error",
          "-analyzeduration", "100M", "-probesize", "100M",
@@ -45,7 +44,6 @@ def get_duration(path: Path) -> float:
 
 
 def get_frame_count(path: Path) -> int:
-    """Return total frame count for the first video stream (0 if unavailable)."""
     result = subprocess.run(
         [FFPROBE, "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=nb_frames",
@@ -61,10 +59,10 @@ def get_frame_count(path: Path) -> int:
 
 def get_subtitle_maps(path: Path) -> list[str]:
     """
-    Return ffmpeg -map arguments for text-based subtitle streams only.
-    PGS (hdmv_pgs_subtitle) and DVD (dvd_subtitle) bitmap formats are skipped.
+    Return ffmpeg -map args for text-based subtitle streams only.
+    PGS and DVD bitmap formats are excluded (they'll be handled separately).
     """
-    skip = {"hdmv_pgs_subtitle", "dvd_subtitle"}
+    skip   = {"hdmv_pgs_subtitle", "dvd_subtitle", "pgssub", "hdmv_pgs_bitmap"}
     result = subprocess.run(
         [FFPROBE, "-v", "error", "-select_streams", "s",
          "-show_entries", "stream=codec_name",
@@ -73,20 +71,51 @@ def get_subtitle_maps(path: Path) -> list[str]:
     )
     maps: list[str] = []
     for i, codec in enumerate(result.stdout.strip().splitlines()):
-        if codec.strip() not in skip:
+        if codec.strip().lower() not in skip:
             maps.extend(["-map", f"0:s:{i}"])
     return maps
 
 
-def verify_mkv_magic(path: Path) -> bool:
-    """Return True if the file starts with the MKV/EBML magic bytes."""
+def get_all_subtitle_info(path: Path) -> list[dict]:
+    """
+    Return a list of subtitle stream dicts with index, codec, lang, title.
+    Used for PGS detection and sub-title renaming.
+    """
+    import json
+    result = subprocess.run(
+        [FFPROBE, "-v", "quiet",
+         "-print_format", "json",
+         "-show_streams", "-select_streams", "s",
+         str(path)],
+        capture_output=True, text=True,
+    )
     try:
-        magic = path.read_bytes()[:4].hex()
-        return magic == "1a45dfa3"
+        data = json.loads(result.stdout)
+    except Exception:
+        return []
+    subs = []
+    for st in data.get("streams", []):
+        tags     = st.get("tags", {})
+        tag_low  = {k.lower(): v for k, v in tags.items()}
+        subs.append({
+            "index":   st.get("index", 0),
+            "codec":   st.get("codec_name", ""),
+            "lang":    tag_low.get("language", "und"),
+            "title":   tag_low.get("title",    ""),
+            "forced":  bool(st.get("disposition", {}).get("forced", 0)),
+            "default": bool(st.get("disposition", {}).get("default", 0)),
+        })
+    return subs
+
+
+def verify_mkv_magic(path: Path) -> bool:
+    try:
+        return path.read_bytes()[:4].hex() == "1a45dfa3"
     except OSError:
         return False
 
 # ─── Formatting helpers ───────────────────────────────────────────────────────
+
 def fmt_size(mb: float) -> str:
     return f"{mb / 1024:.1f} GB" if mb >= 1024 else f"{mb:.0f} MB"
 
@@ -98,6 +127,5 @@ def fmt_duration(secs: float) -> str:
 
 
 def progress_bar(pct: float, width: int = 20) -> str:
-    """Return a Unicode fill-bar string for the given percentage 0–100."""
     filled = int(pct / 100 * width)
     return "▰" * filled + "▱" * (width - filled)
