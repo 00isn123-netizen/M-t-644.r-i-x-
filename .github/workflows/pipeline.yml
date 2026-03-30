@@ -438,12 +438,12 @@ jobs:
             sudo apt-get install -y mkvtoolnix curl
           fi
 
-- name: 📦 Cache FFmpeg Binary
-        id: ffmpeg-cache
-        uses: actions/cache@v4
-        with:
-          path: /usr/local/bin/ff*
-          key: ffmpeg-master-linux64-gpl-${{ runner.os }}
+      - name: 📦 Cache FFmpeg Binary
+              id: ffmpeg-cache
+              uses: actions/cache@v4
+              with:
+                path: /usr/local/bin/ff*
+                key: ffmpeg-master-linux64-gpl-${{ runner.os }}
 
       - name: ⬇️ Download FFmpeg (if not cached)
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
