@@ -143,24 +143,24 @@ jobs:
         if: steps.ytdlp-cache.outputs.cache-hit == 'true'
         run: chmod +x /usr/local/bin/yt-dlp && yt-dlp --version
 
-      # ── Cache: FFmpeg (Jellyfin build w/ SVT-AV1) ──────────────────────
-      - name: 📦 Cache FFmpeg
+# ── Cache: FFmpeg (Static Binary w/ SVT-AV1) ───────────────────────
+      - name: 📦 Cache FFmpeg Binary
         id: ffmpeg-cache
         uses: actions/cache@v4
         with:
-          path: /var/cache/apt/archives
-          key: apt-jellyfin-ffmpeg7-${{ runner.os }}
+          path: /usr/local/bin/ff*
+          key: ffmpeg-master-linux64-gpl-${{ runner.os }}
 
-      - name: ⬇️ Install FFmpeg (Jellyfin)
+      - name: ⬇️ Download FFmpeg (if not cached)
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: |
-          curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
-            | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/jellyfin.gpg
-          echo "deb [arch=amd64] https://repo.jellyfin.org/ubuntu noble main" \
-            | sudo tee /etc/apt/sources.list.d/jellyfin.list
-          sudo apt-get update -q
-          sudo apt-get install -y jellyfin-ffmpeg7
-          echo "/usr/lib/jellyfin-ffmpeg" >> $GITHUB_PATH
-          ffmpeg -encoders 2>/dev/null | grep svtav1
+          wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
+          sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
+          rm -rf ffmpeg-master-latest-linux64-gpl*
+          
+      - name: ✅ Verify FFmpeg
+        run: ffmpeg -encoders 2>/dev/null | grep svtav1 || true
 
       # ── Cache: Python packages ─────────────────────────────────────────
       - name: 📦 Cache Python Packages
@@ -298,16 +298,20 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: ⬇️ Install FFmpeg (Jellyfin)
+      - name: 📦 Cache FFmpeg Binary
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/ff*
+          key: ffmpeg-master-linux64-gpl-${{ runner.os }}
+
+      - name: ⬇️ Download FFmpeg (if not cached)
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: |
-          curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
-            | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/jellyfin.gpg
-          echo "deb [arch=amd64] https://repo.jellyfin.org/ubuntu noble main" \
-            | sudo tee /etc/apt/sources.list.d/jellyfin.list
-          sudo apt-get update -q
-          sudo apt-get install -y jellyfin-ffmpeg7
-          echo "/usr/lib/jellyfin-ffmpeg" >> $GITHUB_PATH
-          ffmpeg -encoders 2>/dev/null | grep svtav1
+          wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
+          sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
+          rm -rf ffmpeg-master-latest-linux64-gpl*
 
       - name: 📦 Cache Python Packages
         id: pip-cache
@@ -434,15 +438,20 @@ jobs:
             sudo apt-get install -y mkvtoolnix curl
           fi
 
-      - name: ⬇️ Install FFmpeg (Jellyfin)
+- name: 📦 Cache FFmpeg Binary
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/ff*
+          key: ffmpeg-master-linux64-gpl-${{ runner.os }}
+
+      - name: ⬇️ Download FFmpeg (if not cached)
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: |
-          curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
-            | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/jellyfin.gpg
-          echo "deb [arch=amd64] https://repo.jellyfin.org/ubuntu noble main" \
-            | sudo tee /etc/apt/sources.list.d/jellyfin.list
-          sudo apt-get update -q
-          sudo apt-get install -y jellyfin-ffmpeg7
-          echo "/usr/lib/jellyfin-ffmpeg" >> $GITHUB_PATH
+          wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
+          sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
+          rm -rf ffmpeg-master-latest-linux64-gpl*
 
       - name: 📦 Cache Python Packages
         id: pip-cache
