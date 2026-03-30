@@ -1,67 +1,157 @@
 name: Matrix AV1 Encoder
 
+run-name: "🚀 [MATRIX]: ${{ inputs.ui_title || inputs.anime_name || inputs.output_name || 'Encode' }}"
+
 on:
   workflow_dispatch:
     inputs:
+      ui_title:
+        description: 'Dashboard Title (shown in run name)'
       video_url:
-        description: 'Video URL — anibd.app link OR direct MKV/MP4'
+        description: 'URL — anibd.app / t.me / HLS / direct CDN / tg_file:'
         required: true
       episode:
-        description: 'Episode number (anibd.app downloads only)'
+        description: 'Episode number (anibd.app or TG downloads)'
         default: ''
       season:
-        description: 'Season number (anibd.app downloads only)'
+        description: 'Season number'
         default: '1'
-      crf:
-        description: 'CRF value (lower = better quality, 23–55)'
-        default: '50'
-      preset:
-        description: 'SVT-AV1 preset (0=slowest/best, 13=fastest)'
-        default: '4'
       output_name:
         description: 'Output filename (without extension)'
         default: 'encoded'
       chunk_count:
-        description: 'Number of chunks to split into (more = more parallelism)'
-        default: '19'
+        description: 'Chunks to split into (more = more parallel runners)'
+        default: '10'
+      crf:
+        description: 'CRF value (lower = better quality, 35–55 anime)'
+        default: '50'
+      preset:
+        description: 'SVT-AV1 preset (0=best/slow … 13=fastest)'
+        default: '4'
+      film_grain:
+        description: 'Film grain synthesis 0–50 (0 = off)'
+        default: '0'
+      res_choice:
+        description: 'Scale height e.g. 1080 (blank = keep original)'
+        default: ''
+      audio_bitrate:
+        description: 'Opus audio bitrate (default 64k)'
+        default: '64k'
+      run_vmaf:
+        description: 'Run VMAF + SSIM after merge? (true/false)'
+        default: 'false'
+      run_upload:
+        description: 'Upload to Gofile? (true/false)'
+        default: 'false'
+      anime_name:
+        description: 'Anime name for structured rename (blank = skip)'
+        default: ''
+      audio_type:
+        description: 'Audio type override (Auto / Sub / Dual / Tri / Multi)'
+        default: 'Auto'
+      content_type:
+        description: 'Content type (Anime / Donghua / Hentai / HMV / AMV)'
+        default: 'Anime'
+      sub_tracks:
+        description: 'Subtitle track labels e.g. "English, Arabic"'
+        default: ''
+      audio_tracks:
+        description: 'Audio track labels e.g. "Japanese, English (Dub)"'
+        default: ''
+      demo_start:
+        description: 'Demo encode start (seconds or HH:MM:SS)'
+        default: '0'
+      demo_duration:
+        description: 'Demo encode length in seconds (blank = full encode)'
+        default: ''
 
 permissions:
   actions: write
   contents: read
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   PYTHON_VERSION: '3.12'
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
 jobs:
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  split-video : Download + slice into N keyframe-aligned chunks            ║
+# ║  split-video : Download → probe → split into N keyframe-aligned chunks   ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
   split-video:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     outputs:
       matrix_json: ${{ steps.set-matrix.outputs.matrix_json }}
       chunk_count: ${{ steps.set-matrix.outputs.chunk_count }}
+
     steps:
+      - uses: actions/checkout@v4
 
-      - name: Checkout pipeline scripts
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Cache apt packages
+      # ── Cache: apt packages ────────────────────────────────────────────
+      - name: 📦 Cache APT Packages
+        id: apt-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/apt-cache
+          key: apt-matrix-v2-${{ runner.os }}
+
+      - name: 🛠 Install System Tools
+        run: |
+          if [ "${{ steps.apt-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "📦 Restoring apt from cache..."
+            sudo cp -rn /tmp/apt-cache/usr / 2>/dev/null || true
+            sudo ldconfig
+          else
+            echo "📥 Installing aria2, mkvtoolnix, curl..."
+            sudo wget -q -O /usr/share/keyrings/gpg-pub-moritzbunkus.gpg \
+              https://mkvtoolnix.download/gpg-pub-moritzbunkus.gpg
+            echo "deb [signed-by=/usr/share/keyrings/gpg-pub-moritzbunkus.gpg] https://mkvtoolnix.download/ubuntu/ $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/mkvtoolnix.list
+            sudo apt-get update -q
+            sudo apt-get install -y aria2 mkvtoolnix curl
+            mkdir -p /tmp/apt-cache/usr
+            for pkg in aria2 mkvtoolnix curl; do
+              dpkg -L $pkg | while read f; do
+                [ -f "$f" ] && sudo cp --parents "$f" /tmp/apt-cache/ 2>/dev/null || true
+              done
+            done
+          fi
+
+      # ── Cache: yt-dlp standalone binary ────────────────────────────────
+      - name: 📦 Cache yt-dlp Binary
+        id: ytdlp-cache
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/yt-dlp
+          key: yt-dlp-standalone-${{ runner.os }}
+
+      - name: ⬇️ Install yt-dlp
+        if: steps.ytdlp-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+            -o /usr/local/bin/yt-dlp
+          chmod +x /usr/local/bin/yt-dlp
+          echo "✅ yt-dlp $(yt-dlp --version) installed"
+
+      - name: ✅ Verify yt-dlp (cached)
+        if: steps.ytdlp-cache.outputs.cache-hit == 'true'
+        run: chmod +x /usr/local/bin/yt-dlp && yt-dlp --version
+
+      # ── Cache: FFmpeg (Jellyfin build w/ SVT-AV1) ──────────────────────
+      - name: 📦 Cache FFmpeg
+        id: ffmpeg-cache
         uses: actions/cache@v4
         with:
           path: /var/cache/apt/archives
           key: apt-jellyfin-ffmpeg7-${{ runner.os }}
 
-      - name: Install ffmpeg (Jellyfin build — includes SVT-AV1)
+      - name: ⬇️ Install FFmpeg (Jellyfin)
         run: |
           curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
             | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/jellyfin.gpg
@@ -70,36 +160,123 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y jellyfin-ffmpeg7
           echo "/usr/lib/jellyfin-ffmpeg" >> $GITHUB_PATH
+          ffmpeg -encoders 2>/dev/null | grep svtav1
 
-      - name: Verify ffmpeg + svtav1
-        run: ffmpeg -encoders 2>/dev/null | grep svtav1
+      # ── Cache: Python packages ─────────────────────────────────────────
+      - name: 📦 Cache Python Packages
+        id: pip-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/lib/python${{ env.PYTHON_VERSION }}/site-packages
+          key: pip-matrix-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
 
-      # ── Download via download.py (anibd.app or direct curl) ──────────────
-      - name: Download
-        env:
-          EPISODE: ${{ github.event.inputs.episode }}
-          SEASON:  ${{ github.event.inputs.season }}
+      - name: 🐍 Install Python Packages
         run: |
-          python3 download.py \
-            "${{ github.event.inputs.video_url }}" \
-            --output source.mkv \
-            $( [ -n "$EPISODE" ] && echo "--episode $EPISODE" ) \
-            --season "${SEASON:-1}"
+          if [ "${{ steps.pip-cache.outputs.cache-hit }}" != "true" ]; then
+            pip install --user -r requirements.txt
+          fi
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      # ── Split via split.py ────────────────────────────────────────────────
-      - name: Slice (${{ github.event.inputs.chunk_count }} chunks, keyframe-aligned)
+      # ── TG session setup ───────────────────────────────────────────────
+      - name: 📁 Setup Session Dir
+        run: mkdir -p tg_session_dir
+
+      - name: 🔀 Resolve TG Lane
+        id: lane
+        run: |
+          LANES=(A B C D E F G H I J K L M N O P Q R S T)
+          IDX=$(( ${{ github.run_number }} % 20 ))
+          LANE="${LANES[$IDX]}"
+          echo "name=lane-${LANE}" >> $GITHUB_OUTPUT
+          echo "Lane: lane-${LANE}"
+
+      - name: 💾 Restore Session Cache
+        uses: actions/cache@v4
+        with:
+          path: tg_session_dir
+          key: tg-session-${{ steps.lane.outputs.name }}
+          restore-keys: tg-session-
+
+      # ── Download ───────────────────────────────────────────────────────
+      - name: 📥 Download
+        id: download
+        env:
+          VIDEO_URL:         ${{ github.event.inputs.video_url }}
+          CUSTOM:            ${{ github.event.inputs.output_name }}
+          EPISODE:           ${{ github.event.inputs.episode }}
+          SEASON:            ${{ github.event.inputs.season }}
+          TG_API_ID:         ${{ secrets.TG_API_ID }}
+          TG_API_HASH:       ${{ secrets.TG_API_HASH }}
+          TG_BOT_TOKEN:      ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID:        ${{ secrets.TG_CHAT_ID }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+        run: python3 download.py 2>&1 | tee download.log
+
+      # ── Probe + crop detection → encode_params.json ────────────────────
+      - name: 🔬 Probe Source + Detect Crop
+        id: probe
+        env:
+          USER_GRAIN: ${{ github.event.inputs.film_grain }}
+        run: |
+          python3 - <<'EOF'
+          import json, sys
+          sys.path.insert(0, ".")
+          import config
+          config.SOURCE = "source.mkv"
+          from media import get_video_info, get_crop_params
+          duration, width, height, is_hdr, total_frames, channels, fps_val = get_video_info()
+          print(f"  Source: {duration:.0f}s  {width}x{height}  {'HDR' if is_hdr else 'SDR'}  {fps_val:.2f}fps")
+          crop_val = None
+          import os
+          if os.environ.get("USER_GRAIN", "") == "" or True:   # always detect crop
+              from media import get_crop_params
+              crop_val = get_crop_params(duration)
+              print(f"  Crop: {crop_val or 'none'}")
+          grain = int(os.environ.get("USER_GRAIN", "0") or 0)
+          params = {
+              "duration": duration, "width": width, "height": height,
+              "is_hdr": is_hdr, "fps_val": fps_val,
+              "crop_val": crop_val,
+              "grain": grain,
+              "audio_bitrate": os.environ.get("AUDIO_BITRATE", "64k"),
+          }
+          with open("encode_params.json", "w") as f:
+              json.dump(params, f)
+          print(json.dumps(params, indent=2))
+          EOF
+
+      # ── Split ──────────────────────────────────────────────────────────
+      - name: ✂️ Slice (${{ github.event.inputs.chunk_count }} chunks)
         id: set-matrix
         run: |
           python3 split.py source.mkv \
             --chunks "${{ github.event.inputs.chunk_count }}" \
             --print-matrix
 
-      - name: Upload raw chunks
+      - name: 📤 Upload Raw Chunks + Params
         uses: actions/upload-artifact@v4
         with:
           name: raw-chunks
-          path: part_*.mkv
+          path: |
+            part_*.mkv
+            encode_params.json
           retention-days: 1
+
+      # ── Save TG session ────────────────────────────────────────────────
+      - name: 💾 Save TG Session
+        if: always()
+        run: |
+          LANE="${{ steps.lane.outputs.name }}"
+          for f in enc_session.session enc_session_${LANE}.session tg_dl_session_${LANE}.session; do
+            [ -f "$f" ] && cp "$f" "tg_session_dir/${f}" && echo "✅ Saved: $f" || true
+          done
+
+      - name: 🗃 Cache TG Session
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: tg_session_dir
+          key: tg-session-${{ steps.lane.outputs.name }}
 
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
@@ -113,23 +290,15 @@ jobs:
       fail-fast: false
       matrix:
         part: ${{ fromJson(needs.split-video.outputs.matrix_json) }}
+
     steps:
+      - uses: actions/checkout@v4
 
-      - name: Checkout pipeline scripts
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Cache apt packages
-        uses: actions/cache@v4
-        with:
-          path: /var/cache/apt/archives
-          key: apt-jellyfin-ffmpeg7-${{ runner.os }}
-
-      - name: Install ffmpeg
+      - name: ⬇️ Install FFmpeg (Jellyfin)
         run: |
           curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
             | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/jellyfin.gpg
@@ -138,45 +307,69 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y jellyfin-ffmpeg7
           echo "/usr/lib/jellyfin-ffmpeg" >> $GITHUB_PATH
+          ffmpeg -encoders 2>/dev/null | grep svtav1
 
-      - name: Verify ffmpeg + svtav1
-        run: ffmpeg -encoders 2>/dev/null | grep svtav1
+      - name: 📦 Cache Python Packages
+        id: pip-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/lib/python${{ env.PYTHON_VERSION }}/site-packages
+          key: pip-matrix-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
 
-      - name: Download chunk
+      - name: 🐍 Install Python Packages
+        run: |
+          if [ "${{ steps.pip-cache.outputs.cache-hit }}" != "true" ]; then
+            pip install --user -r requirements.txt
+          fi
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: 📥 Download Chunk + Params
         uses: actions/download-artifact@v4
         with:
           name: raw-chunks
 
-      # ── Encode single chunk via encode.py ─────────────────────────────────
-      - name: Encode ${{ matrix.part }}
+      # ── Encode single chunk ────────────────────────────────────────────
+      - name: ⚙️ Encode ${{ matrix.part }}
         run: |
           PART="${{ matrix.part }}"
           PART_ID="${PART%.mkv}"
           OUTNAME="${PART_ID}-encoded.mkv"
           START_TIME=$(date +%s)
 
-          # Run encode.py in single-chunk mode (writes to cwd)
+          # Read encode params
+          CROP=$(python3 -c "import json; d=json.load(open('encode_params.json')); print(d.get('crop_val') or '')" 2>/dev/null || echo "")
+          IS_HDR=$(python3 -c "import json; d=json.load(open('encode_params.json')); print('1' if d.get('is_hdr') else '0')" 2>/dev/null || echo "0")
+          GRAIN=$(python3 -c "import json; d=json.load(open('encode_params.json')); print(d.get('grain', 0))" 2>/dev/null || echo "0")
+          DURATION=$(python3 -c "import json; d=json.load(open('encode_params.json')); print(d.get('duration', 1500))" 2>/dev/null || echo "1500")
+          AUDIO_BR=$(python3 -c "import json; d=json.load(open('encode_params.json')); print(d.get('audio_bitrate','64k'))" 2>/dev/null || echo "64k")
+
+          # Build encode.py args
+          EXTRA_ARGS=""
+          [ -n "$CROP" ] && EXTRA_ARGS="$EXTRA_ARGS --crop $CROP"
+          [ "$IS_HDR" = "1" ] && EXTRA_ARGS="$EXTRA_ARGS --hdr"
+          [ -n "${{ github.event.inputs.res_choice }}" ] && \
+            EXTRA_ARGS="$EXTRA_ARGS --res ${{ github.event.inputs.res_choice }}"
+
           python3 encode.py "$PART" \
             --crf     "${{ github.event.inputs.crf }}" \
             --preset  "${{ github.event.inputs.preset }}" \
-            --out-dir "." &
+            --grain   "$GRAIN" \
+            --audio-bitrate "$AUDIO_BR" \
+            --duration "$DURATION" \
+            --out-dir "." \
+            $EXTRA_ARGS &
           ENCODE_PID=$!
 
-          # Log progress every 20 s while encode runs
+          # Progress loop
           while kill -0 $ENCODE_PID 2>/dev/null; do
             sleep 20
             PROG_FILE="/tmp/.prog_${PART_ID}.txt"
             [ ! -f "$PROG_FILE" ] && continue
-
-            FRAME=$(grep "^frame="      "$PROG_FILE" | tail -1 | cut -d= -f2 | tr -d ' ')
-            SPEED=$(grep "^speed="      "$PROG_FILE" | tail -1 | cut -d= -f2 | tr -d ' x')
+            SPEED=$(grep "^speed=" "$PROG_FILE" | tail -1 | cut -d= -f2 | tr -d ' x')
             SIZE=$(grep  "^total_size=" "$PROG_FILE" | tail -1 | cut -d= -f2 | tr -d ' ')
             ELAPSED=$(($(date +%s) - START_TIME))
-
-            FRAME=${FRAME:-0}; SPEED=${SPEED:-0}; SIZE=${SIZE:-0}
-
             python3 encode.py --log-progress \
-              "{\"progress\":0,\"speed\":${SPEED},\"eta_seconds\":0,\"size_bytes\":${SIZE},\"finished\":false}" \
+              "{\"progress\":0,\"speed\":${SPEED:-0},\"eta_seconds\":0,\"size_bytes\":${SIZE:-0},\"finished\":false}" \
               --part-id "$PART_ID"
           done
 
@@ -184,21 +377,20 @@ jobs:
           EXIT_CODE=$?
           [ $EXIT_CODE -ne 0 ] && { echo "encode.py failed (exit $EXIT_CODE)"; exit $EXIT_CODE; }
 
-          # Final snapshot
           ELAPSED=$(($(date +%s) - START_TIME))
           FINAL_SIZE=$(stat -c%s "$OUTNAME" 2>/dev/null || echo 0)
           python3 encode.py --log-progress \
             "{\"progress\":100.0,\"speed\":0,\"eta_seconds\":0,\"size_bytes\":$FINAL_SIZE,\"finished\":true}" \
             --part-id "$PART_ID"
 
-      - name: Set safe artifact name
+      - name: 🏷️ Safe Artifact Name
         id: art
         run: |
           SAFE="${{ matrix.part }}"
           SAFE="${SAFE%.mkv}"
           echo "name=encoded-${SAFE}" >> $GITHUB_OUTPUT
 
-      - name: Upload encoded chunk
+      - name: 📤 Upload Encoded Chunk
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.art.outputs.name }}
@@ -207,29 +399,66 @@ jobs:
 
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  monitor-and-merge : Poll encode jobs, then merge chunks → final MKV      ║
+# ║  monitor : Poll GitHub API every 30 s for per-chunk job status            ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
-  monitor-and-merge:
+  monitor:
     needs: split-video
     runs-on: ubuntu-latest
-    timeout-minutes: 210
+    timeout-minutes: 180
+
     steps:
+      - uses: actions/checkout@v4
 
-      - name: Checkout pipeline scripts
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Cache apt packages
+      - name: 📊 Watch Encode Progress
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID:   ${{ github.run_id }}
+          REPO:     ${{ github.repository }}
+          CHUNKS:   ${{ needs.split-video.outputs.matrix_json }}
+        run: python3 monitor.py --mode github
+
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  merge-video : Verify → concat → remux → VMAF → upload → TG report       ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+  merge-video:
+    needs: [split-video, encode-parts]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 📦 Cache APT Packages
+        id: apt-cache
         uses: actions/cache@v4
         with:
-          path: /var/cache/apt/archives
-          key: apt-jellyfin-ffmpeg7-${{ runner.os }}
+          path: /tmp/apt-cache
+          key: apt-matrix-v2-${{ runner.os }}
 
-      - name: Install ffmpeg
+      - name: 🛠 Install System Tools
+        run: |
+          if [ "${{ steps.apt-cache.outputs.cache-hit }}" = "true" ]; then
+            sudo cp -rn /tmp/apt-cache/usr / 2>/dev/null || true
+            sudo ldconfig
+          else
+            sudo wget -q -O /usr/share/keyrings/gpg-pub-moritzbunkus.gpg \
+              https://mkvtoolnix.download/gpg-pub-moritzbunkus.gpg
+            echo "deb [signed-by=/usr/share/keyrings/gpg-pub-moritzbunkus.gpg] https://mkvtoolnix.download/ubuntu/ $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/mkvtoolnix.list
+            sudo apt-get update -q
+            sudo apt-get install -y mkvtoolnix curl
+          fi
+
+      - name: ⬇️ Install FFmpeg (Jellyfin)
         run: |
           curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
             | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/jellyfin.gpg
@@ -239,60 +468,171 @@ jobs:
           sudo apt-get install -y jellyfin-ffmpeg7
           echo "/usr/lib/jellyfin-ffmpeg" >> $GITHUB_PATH
 
-      # ── Watch encode-parts via GitHub API ─────────────────────────────────
-      - name: Watch encode progress (GitHub API mode)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_ID:   ${{ github.run_id }}
-          REPO:     ${{ github.repository }}
-          CHUNKS:   ${{ needs.split-video.outputs.matrix_json }}
-        run: python3 monitor.py --mode github
+      - name: 📦 Cache Python Packages
+        id: pip-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/lib/python${{ env.PYTHON_VERSION }}/site-packages
+          key: pip-matrix-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
 
-      # ── Download all encoded chunks once monitor exits cleanly ────────────
-      - name: Download all encoded chunks
+      - name: 🐍 Install Python Packages
+        run: |
+          if [ "${{ steps.pip-cache.outputs.cache-hit }}" != "true" ]; then
+            pip install --user -r requirements.txt
+          fi
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      # ── TG session ────────────────────────────────────────────────────
+      - name: 📁 Setup Session Dir
+        run: mkdir -p tg_session_dir
+
+      - name: 🔀 Resolve TG Lane
+        id: lane
+        run: |
+          LANES=(A B C D E F G H I J K L M N O P Q R S T)
+          IDX=$(( ${{ github.run_number }} % 20 ))
+          echo "name=lane-${LANES[$IDX]}" >> $GITHUB_OUTPUT
+
+      - name: 💾 Restore Session Cache
+        uses: actions/cache@v4
+        with:
+          path: tg_session_dir
+          key: tg-session-${{ steps.lane.outputs.name }}
+          restore-keys: tg-session-
+
+      - name: 📥 Download All Encoded Chunks
         uses: actions/download-artifact@v4
         with:
           path: encoded-parts
           pattern: encoded-*
           merge-multiple: true
 
-      # ── Merge via merge.py ────────────────────────────────────────────────
-      - name: Merge chunks → final MKV
+      # Also download encode_params.json from raw-chunks artifact
+      - name: 📥 Download Encode Params
+        uses: actions/download-artifact@v4
+        with:
+          name: raw-chunks
+          pattern: encode_params.json
+        continue-on-error: true
+
+      # ── Merge + post-process ───────────────────────────────────────────
+      - name: 🔗 Merge + Post-Process
+        id: merge
+        env:
+          TG_API_ID:         ${{ secrets.TG_API_ID }}
+          TG_API_HASH:       ${{ secrets.TG_API_HASH }}
+          TG_BOT_TOKEN:      ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID:        ${{ secrets.TG_CHAT_ID }}
+          SESSION_NAME:      enc_session
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          ANIME_NAME:        ${{ github.event.inputs.anime_name }}
+          SEASON:            ${{ github.event.inputs.season }}
+          EPISODE:           ${{ github.event.inputs.episode }}
+          AUDIO_TYPE:        ${{ github.event.inputs.audio_type }}
+          CONTENT_TYPE:      ${{ github.event.inputs.content_type }}
+          SUB_TRACKS:        ${{ github.event.inputs.sub_tracks }}
+          AUDIO_TRACKS:      ${{ github.event.inputs.audio_tracks }}
+          RUN_VMAF:          ${{ github.event.inputs.run_vmaf }}
+          RUN_UPLOAD:        ${{ github.event.inputs.run_upload }}
+          USER_GRAIN:        ${{ github.event.inputs.film_grain }}
+          AUDIO_BITRATE:     ${{ github.event.inputs.audio_bitrate }}
         run: |
+          # Derive tg_fname from download step or fallback to output_name
+          FILE_NAME=$(cat tg_fname.txt 2>/dev/null || echo "${{ github.event.inputs.output_name }}.mkv")
+          export FILE_NAME
+
           python3 merge.py \
             --output   "${{ github.event.inputs.output_name }}" \
             --enc-dir  encoded-parts \
             --expected "${{ needs.split-video.outputs.chunk_count }}" \
             --crf      "${{ github.event.inputs.crf }}" \
-            --preset   "${{ github.event.inputs.preset }}"
+            --preset   "${{ github.event.inputs.preset }}" \
+            --grain    "${{ github.event.inputs.film_grain }}" \
+            --audio-bitrate "${{ github.event.inputs.audio_bitrate }}" \
+            --anime-name    "${{ github.event.inputs.anime_name }}" \
+            --season        "${{ github.event.inputs.season }}" \
+            --episode       "${{ github.event.inputs.episode }}" \
+            --audio-type    "${{ github.event.inputs.audio_type }}" \
+            --content-type  "${{ github.event.inputs.content_type }}" \
+            --sub-tracks    "${{ github.event.inputs.sub_tracks }}" \
+            --audio-tracks  "${{ github.event.inputs.audio_tracks }}" \
+            --params-file   encode_params.json \
+            $( [ "${{ github.event.inputs.run_vmaf }}"   = "true" ] && echo "--run-vmaf"   ) \
+            $( [ "${{ github.event.inputs.run_upload }}" = "true" ] && echo "--run-upload" ) \
+            2>&1 | tee encode.log
 
-      - name: Upload final result
+      - name: 📤 Upload Final Result
         uses: actions/upload-artifact@v4
         with:
           name: final-result
-          path: "${{ github.event.inputs.output_name }}.mkv"
+          path: |
+            ${{ github.event.inputs.output_name }}.mkv
+            *.mkv
+
+      # ── Save TG session ────────────────────────────────────────────────
+      - name: 💾 Save TG Session
+        if: always()
+        run: |
+          LANE="${{ steps.lane.outputs.name }}"
+          for f in enc_session.session enc_session_${LANE}.session; do
+            [ -f "$f" ] && cp "$f" "tg_session_dir/${f}" || true
+          done
+
+      - name: 🗃 Cache TG Session
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: tg_session_dir
+          key: tg-session-${{ steps.lane.outputs.name }}
 
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  cleanup : Delete intermediate artifacts via cleanup.py                   ║
+# ║  cleanup : Delete intermediate artifacts                                  ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
   cleanup:
-    needs: monitor-and-merge
+    needs: merge-video
     runs-on: ubuntu-latest
     if: always()
+
     steps:
+      - uses: actions/checkout@v4
 
-      - name: Checkout pipeline scripts
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Delete intermediate artifacts
+      - name: 🗑 Delete Intermediate Artifacts
         env:
-          GH_TOKEN:           ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY:  ${{ github.repository }}
-          GITHUB_RUN_ID:      ${{ github.run_id }}
+          GH_TOKEN:          ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID:     ${{ github.run_id }}
         run: python3 cleanup.py --github
+
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  notify-failure : Send TG alert if any step failed                        ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+  notify-failure:
+    needs: [split-video, encode-parts, merge-video]
+    runs-on: ubuntu-latest
+    if: failure()
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 🚨 Send Failure Notification
+        env:
+          TG_BOT_TOKEN:      ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID:        ${{ secrets.TG_CHAT_ID }}
+          DOWNLOAD_OUTCOME:  ${{ needs.split-video.result }}
+          ENCODE_OUTCOME:    ${{ needs.encode-parts.result }}
+          MERGE_OUTCOME:     ${{ needs.merge-video.result }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID:     ${{ github.run_id }}
+          UI_TITLE:          ${{ github.event.inputs.ui_title || github.event.inputs.anime_name || github.event.inputs.output_name || 'Unknown' }}
+        run: python3 notify_failure.py
