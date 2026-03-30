@@ -207,38 +207,12 @@ jobs:
 
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  monitor : Poll GitHub API every 30 s, print per-chunk job status          ║
+# ║  monitor-and-merge : Poll encode jobs, then merge chunks → final MKV      ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
-  monitor:
+  monitor-and-merge:
     needs: split-video
     runs-on: ubuntu-latest
-    timeout-minutes: 180
-    steps:
-
-      - name: Checkout pipeline scripts
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Watch encode progress (GitHub API mode)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_ID:   ${{ github.run_id }}
-          REPO:     ${{ github.repository }}
-          CHUNKS:   ${{ needs.split-video.outputs.matrix_json }}
-        run: python3 monitor.py --mode github
-
-
-# ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  merge-video : Verify, concatenate, upload final MKV                      ║
-# ╚═══════════════════════════════════════════════════════════════════════════╝
-  merge-video:
-    needs: [split-video, encode-parts]
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 210
     steps:
 
       - name: Checkout pipeline scripts
@@ -265,6 +239,16 @@ jobs:
           sudo apt-get install -y jellyfin-ffmpeg7
           echo "/usr/lib/jellyfin-ffmpeg" >> $GITHUB_PATH
 
+      # ── Watch encode-parts via GitHub API ─────────────────────────────────
+      - name: Watch encode progress (GitHub API mode)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID:   ${{ github.run_id }}
+          REPO:     ${{ github.repository }}
+          CHUNKS:   ${{ needs.split-video.outputs.matrix_json }}
+        run: python3 monitor.py --mode github
+
+      # ── Download all encoded chunks once monitor exits cleanly ────────────
       - name: Download all encoded chunks
         uses: actions/download-artifact@v4
         with:
@@ -293,7 +277,7 @@ jobs:
 # ║  cleanup : Delete intermediate artifacts via cleanup.py                   ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
   cleanup:
-    needs: merge-video
+    needs: monitor-and-merge
     runs-on: ubuntu-latest
     if: always()
     steps:
