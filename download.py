@@ -178,7 +178,7 @@ def _download_hls_or_platform(url: str):
     referer, ffmpeg_headers = _detect_referer(url)
 
     # kwik.cx: CF-bypass proxy + aria2c
-    if "kwik.cx" in url:
+    if "uwucdn.top" in url:
         ref     = referer or "https://kwik.cx/"
         proxied = f"https://universal-proxy.cloud-dl.workers.dev/?url={url}"
         print(f"🌐 kwik.cx → proxy: {proxied}", flush=True)
