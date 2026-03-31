@@ -4,6 +4,7 @@ download.py — Unified download router for the Matrix AV1 Encoder.
 URL routing:
   tg_file: / t.me/   →  tg_handler.py  (Pyrogram bot download)
   magnet:             →  blocked (exit 1)
+  iwara.tv / iwara.ai →  iwara.py       (Iwara API, Source quality)
   anibd.app           →  anibd.py       (HLS segment pipeline)
   *.m3u8 / platforms  →  yt-dlp + aria2c
   everything else     →  aria2c direct  (curl pre-resolves redirects)
@@ -140,6 +141,45 @@ def _download_telegram():
     _run(["python3", "tg_handler.py"], label="TG")
 
 
+def _download_iwara(url: str, output: Path):
+    """Import iwara.py and call its download() function (Source quality)."""
+    print("🌸 Iwara URL → iwara.py", flush=True)
+
+    # Extract video ID from URL patterns:
+    #   https://www.iwara.tv/videos/<id>
+    #   https://www.iwara.tv/video/<id>
+    #   https://iwara.tv/videos/<id>/<slug>
+    m = re.search(r'/videos?/([A-Za-z0-9]+)', url)
+    if not m:
+        print("❌ Could not extract Iwara video ID from URL.")
+        sys.exit(1)
+    video_id = m.group(1)
+    print(f"🔑 Iwara video ID: {video_id}", flush=True)
+
+    candidates = [Path(__file__).parent / "iwara.py", Path.cwd() / "iwara.py"]
+    iwara_path = next((p for p in candidates if p.exists()), None)
+    if not iwara_path:
+        print("❌ iwara.py not found.")
+        sys.exit(1)
+
+    spec  = importlib.util.spec_from_file_location("iwara", iwara_path)
+    iwara = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(iwara)
+
+    orig_cwd = Path.cwd()
+    try:
+        os.chdir(output.parent.resolve())
+        iwara.download(video_id=video_id, output_path=str(output.name))
+    finally:
+        os.chdir(orig_cwd)
+
+    # Ensure output landed at the expected path
+    written = output.parent / output.name
+    if not written.exists():
+        print(f"❌ Iwara download did not produce {output}")
+        sys.exit(1)
+
+
 def _download_anibd(url: str, output: Path, episode: int | None, season: int):
     """Import anibd.py and call its pipeline download() function."""
     print("🎌 anibd.app URL → anibd.py", flush=True)
@@ -267,6 +307,10 @@ def download(
     if url.startswith("magnet:"):
         print("❌ Magnet links are disabled.")
         sys.exit(1)
+
+    if "iwara.tv" in url or "iwara.ai" in url:
+        _download_iwara(url, output)
+        return
 
     if "anibd.app" in url:
         _download_anibd(url, output, episode, season)

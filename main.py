@@ -48,7 +48,7 @@ _CPU_CORES = os.cpu_count() or 1
 
 # ─── Banner ───────────────────────────────────────────────────────────────────
 
-def banner(args: argparse.Namespace) -> None:
+def banner(args: argparse.Namespace, out_name: str = "(resolves after download)") -> None:
     print(f"""
 {CY}{B}  ┌──────────────────────────────────────────────────┐
   │     Matrix AV1 Encoder  —  Integrated Pipeline  │
@@ -57,7 +57,7 @@ def banner(args: argparse.Namespace) -> None:
   CRF      : {args.crf}    Preset  : {args.preset}
   Chunks   : {args.chunks}    Workers : {args.workers}
   Grain    : {args.grain}    Res     : {args.res or 'original'}
-  Output   : {args.output}.mkv
+  Output   : {out_name}
 """, flush=True)
 
 
@@ -77,7 +77,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--workers",      type=int,  default=_CPU_CORES)
     p.add_argument("--res",          default=None,              help="Scale height e.g. 1080")
     p.add_argument("--audio-bitrate",default="64k",             help="Opus bitrate")
-    p.add_argument("--output",       default="encoded",         help="Output name (no ext)")
+    p.add_argument("--output",       default="",                help="Override output name (no ext); default: original filename")
     p.add_argument("--episode",      type=int,  default=None)
     p.add_argument("--season",       type=int,  default=1)
     p.add_argument("--anime-name",   default="",               help="Structured rename")
@@ -102,10 +102,9 @@ def main() -> None:
     args     = _parse_args()
     work_dir = Path(".")
     source   = work_dir / "source.mkv"
-    out_file = work_dir / f"{args.output}.mkv"
 
     check_ffmpeg()
-    banner(args)
+    banner(args)  # printed early; output name resolved after download
 
     # Propagate CLI args into config (so merge.py / media.py read them)
     config.ANIME_NAME    = args.anime_name    or config.ANIME_NAME
@@ -131,6 +130,23 @@ def main() -> None:
     else:
         dl.download(args.url, source,
                     episode=args.episode, season=args.season)
+
+    # ── Resolve output filename from original downloaded name ────────────
+    if args.output:
+        # Manual override supplied via --output
+        out_file = work_dir / f"{args.output}.mkv"
+    else:
+        fname_txt = work_dir / "tg_fname.txt"
+        if fname_txt.exists():
+            raw = fname_txt.read_text(encoding="utf-8").strip()
+            stem = Path(raw).stem  # strip existing extension
+            out_file = work_dir / f"{stem}.mkv"
+        else:
+            # Fallback: derive from URL
+            import urllib.parse as _up
+            stem = Path(_up.urlparse(args.url).path).stem or "encoded"
+            out_file = work_dir / f"{stem}.mkv"
+    print(f"  {DIM}Output   : {out_file.name}{R}", flush=True)
 
     # ── Step 2: Probe ─────────────────────────────────────────────────────
     from media import get_video_info, get_crop_params
