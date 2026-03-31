@@ -174,6 +174,14 @@ def download(video_id: str, output_path="source.mkv") -> None:
         flush=True,
     )
 
+    # Write tg_fname.txt so main.py can resolve the real output filename
+    try:
+        fname_txt = Path(output_path).parent / "tg_fname.txt"
+        fname_txt.write_text(display_name, encoding="utf-8")
+        print(f"[*] tg_fname.txt → {display_name}", flush=True)
+    except Exception as e:
+        print(f"[!] Could not write tg_fname.txt: {e}", flush=True)
+
     # ── 5. File size probe ─────────────────────────────────────────────────
     total_size = _get_remote_file_size(download_url, headers)
 
