@@ -208,17 +208,16 @@ def _download_anibd(url: str, output: Path, episode: int | None, season: int):
     if written.resolve() != output.resolve() and written.exists():
         written.rename(output)
 
-
 def _download_hls_or_platform(url: str):
-    """yt-dlp + aria2c for HLS streams and known platforms."""
+    """yt-dlp for HLS streams and known platforms."""
     output_name = _ensure_video_ext(CUSTOM if CUSTOM else _resolve_filename(url))
     _write_fname(output_name)
     _notify_start("yt-dlp (HLS/platform)", output_name)
 
     referer, ffmpeg_headers = _detect_referer(url)
 
-    # kwik.cx: CF-bypass proxy + aria2c
-    if "kwik.cx" in url:
+    # kwik.cx: CF-bypass proxy + aria2c (direct MP4, not HLS)
+    if "kwik.cx" in url and not url.endswith(".m3u8"):
         ref     = referer or "https://kwik.cx/"
         proxied = f"https://universal-proxy.cloud-dl.workers.dev/?url={url}"
         print(f"🌐 kwik.cx → proxy: {proxied}", flush=True)
@@ -235,25 +234,39 @@ def _download_hls_or_platform(url: str):
         ], label="aria2c")
         return
 
+    # Build yt-dlp command
     cmd = [
         "yt-dlp",
         "--add-header", "User-Agent:Mozilla/5.0",
         "--extractor-args", "generic:impersonate",
-        "--downloader", "aria2c",
-        "--downloader-args",
-        "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn "
-        "--summary-interval=10 --retry-wait=5 --max-tries=10",
         "--merge-output-format", "mkv",
         "-o", "source.mkv",
     ]
+
+    # HLS streams: use native downloader (NOT aria2c)
+    # aria2c can't parse m3u8 manifests
+    if url.endswith(".m3u8") or ".m3u8" in url:
+        cmd += [
+            "--hls-prefer-native",
+            "--retries", "20",
+            "--fragment-retries", "100",
+        ]
+        print(f"📡 HLS stream → yt-dlp native  [{output_name}]", flush=True)
+    else:
+        # Non-HLS platforms: can use aria2c for faster downloading
+        cmd += [
+            "--downloader", "aria2c",
+            "--downloader-args",
+            "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn "
+            "--summary-interval=10 --retry-wait=5 --max-tries=10",
+        ]
+        print(f"📡 Platform → yt-dlp + aria2c  [{output_name}]", flush=True)
+
     if referer:
         cmd += ["--referer", referer]
-    if ffmpeg_headers:
-        cmd += ["--downloader-args", f"ffmpeg_i:{ffmpeg_headers}"]
+    
     cmd.append(url)
-    print(f"📡 HLS/platform → yt-dlp  [{output_name}]", flush=True)
     _run(cmd, label="yt-dlp")
-
 
 def _download_direct(url: str):
     """aria2c for plain CDN/direct links (curl pre-resolves redirects)."""
