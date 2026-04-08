@@ -243,17 +243,22 @@ def _download_hls_or_platform(url: str):
         "-o", "source.mkv",
     ]
 
-    # HLS streams: use native downloader (NOT aria2c)
-    # aria2c can't parse m3u8 manifests
+    # HLS streams: use native downloader with aria2c for fragments
     if url.endswith(".m3u8") or ".m3u8" in url:
         cmd += [
             "--hls-prefer-native",
+            "--downloader", "aria2c",
+            "--downloader-args",
+            "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn "
+            "--summary-interval=10 --retry-wait=5 --max-tries=10 "
+            "--header=User-Agent:Mozilla/5.0" +
+            (f" --header=Referer:{referer}" if referer else ""),
             "--retries", "20",
             "--fragment-retries", "100",
         ]
-        print(f"📡 HLS stream → yt-dlp native  [{output_name}]", flush=True)
+        print(f"📡 HLS stream → yt-dlp + aria2c fragments [{output_name}]", flush=True)
     else:
-        # Non-HLS platforms: can use aria2c for faster downloading
+        # Non-HLS platforms: use aria2c for main download
         cmd += [
             "--downloader", "aria2c",
             "--downloader-args",
