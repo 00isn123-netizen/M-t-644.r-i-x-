@@ -216,11 +216,33 @@ def _download_hls_or_platform(url: str):
 
     referer, ffmpeg_headers = _detect_referer(url)
 
+    # uwucdn.top / kwik.cx HLS: Use kiwik-proxy CF Worker
+    if "uwucdn.top" in url or "kwik.cx" in url:
+        CF_WORKER = "https://kiwik-proxy.cloud-dl.workers.dev"
+        proxied_url = f"{CF_WORKER}/?url={urllib.parse.quote(url, safe='')}"
+        
+        print(f"🌐 HLS → kiwik-proxy: {proxied_url[:80]}...", flush=True)
+        
+        cmd = [
+            "yt-dlp",
+            "--add-header", "User-Agent:Mozilla/5.0",
+            "--extractor-args", "generic:impersonate",
+            "--merge-output-format", "mkv",
+            "-o", "source.mkv",
+            "--hls-prefer-native",
+            "--retries", "20",
+            "--fragment-retries", "100",
+            proxied_url,
+        ]
+        print(f"📡 HLS stream → yt-dlp + kiwik-proxy [{output_name}]", flush=True)
+        _run(cmd, label="yt-dlp")
+        return
+
     # kwik.cx direct MP4 (not HLS): CF-bypass proxy + aria2c
     if "kwik.cx" in url and not url.endswith(".m3u8"):
-        ref     = referer or "https://kwik.cx/"
-        proxied = f"https://universal-proxy.cloud-dl.workers.dev/?url={url}"
-        print(f"🌐 kwik.cx → proxy: {proxied}", flush=True)
+        ref = referer or "https://kwik.cx/"
+        proxied = f"https://kiwik-proxy.cloud-dl.workers.dev/?url={url}"
+        print(f"🌐 kwik.cx MP4 → proxy: {proxied}", flush=True)
         _run([
             "aria2c",
             "-x", "16", "-s", "16", "-k", "1M",
@@ -234,7 +256,7 @@ def _download_hls_or_platform(url: str):
         ], label="aria2c")
         return
 
-    # Build yt-dlp command
+    # Build yt-dlp command for other URLs
     cmd = [
         "yt-dlp",
         "--add-header", "User-Agent:Mozilla/5.0",
@@ -243,7 +265,6 @@ def _download_hls_or_platform(url: str):
         "-o", "source.mkv",
     ]
 
-    # HLS streams: use native downloader (NO aria2c)
     if url.endswith(".m3u8") or ".m3u8" in url:
         cmd += [
             "--hls-prefer-native",
@@ -252,7 +273,6 @@ def _download_hls_or_platform(url: str):
         ]
         print(f"📡 HLS stream → yt-dlp native [{output_name}]", flush=True)
     else:
-        # Non-HLS platforms: use aria2c for faster downloading
         cmd += [
             "--downloader", "aria2c",
             "--downloader-args",
