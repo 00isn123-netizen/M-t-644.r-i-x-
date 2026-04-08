@@ -219,22 +219,31 @@ def _download_hls_or_platform(url: str):
     # uwucdn.top / kwik.cx HLS: Use kiwik-proxy CF Worker
     if "uwucdn.top" in url or "kwik.cx" in url:
         CF_WORKER = "https://kiwik-proxy.cloud-dl.workers.dev"
-        proxied_url = f"{CF_WORKER}/?url={urllib.parse.quote(url, safe='')}"
+        
+        # Decode first to prevent double encoding
+        decoded_url = urllib.parse.unquote(url)
+        encoded_url = urllib.parse.quote(decoded_url, safe='')
+        proxied_url = f"{CF_WORKER}/?url={encoded_url}"
         
         print(f"🌐 HLS → kiwik-proxy: {proxied_url[:80]}...", flush=True)
         
+        # Use ffmpeg downloader which handles HLS better with custom headers
         cmd = [
             "yt-dlp",
             "--add-header", "User-Agent:Mozilla/5.0",
+            "--add-header", "Referer:https://kwik.cx/",
             "--extractor-args", "generic:impersonate",
             "--merge-output-format", "mkv",
             "-o", "source.mkv",
-            "--hls-prefer-native",
+            "--downloader", "ffmpeg",
+            "--hls-use-mpegts",
+            "--ffmpeg-location", "/usr/local/bin/ffmpeg",
+            "--downloader-args", "ffmpeg:-allowed_extensions ALL -protocol_whitelist file,http,https,tcp,tls,crypto -headers 'Referer: https://kwik.cx/\\r\\nUser-Agent: Mozilla/5.0\\r\\n'",
             "--retries", "20",
             "--fragment-retries", "100",
             proxied_url,
         ]
-        print(f"📡 HLS stream → yt-dlp + kiwik-proxy [{output_name}]", flush=True)
+        print(f"📡 HLS stream → yt-dlp + ffmpeg + kiwik-proxy [{output_name}]", flush=True)
         _run(cmd, label="yt-dlp")
         return
 
