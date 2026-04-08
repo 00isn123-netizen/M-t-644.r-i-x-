@@ -216,7 +216,7 @@ def _download_hls_or_platform(url: str):
 
     referer, ffmpeg_headers = _detect_referer(url)
 
-    # kwik.cx: CF-bypass proxy + aria2c (direct MP4, not HLS)
+    # kwik.cx direct MP4 (not HLS): CF-bypass proxy + aria2c
     if "kwik.cx" in url and not url.endswith(".m3u8"):
         ref     = referer or "https://kwik.cx/"
         proxied = f"https://universal-proxy.cloud-dl.workers.dev/?url={url}"
@@ -243,29 +243,23 @@ def _download_hls_or_platform(url: str):
         "-o", "source.mkv",
     ]
 
-    # HLS streams: use native downloader with aria2c for fragments
+    # HLS streams: use native downloader (NO aria2c)
     if url.endswith(".m3u8") or ".m3u8" in url:
         cmd += [
             "--hls-prefer-native",
-            "--downloader", "aria2c",
-            "--downloader-args",
-            "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn "
-            "--summary-interval=10 --retry-wait=5 --max-tries=10 "
-            "--header=User-Agent:Mozilla/5.0" +
-            (f" --header=Referer:{referer}" if referer else ""),
             "--retries", "20",
             "--fragment-retries", "100",
         ]
-        print(f"📡 HLS stream → yt-dlp + aria2c fragments [{output_name}]", flush=True)
+        print(f"📡 HLS stream → yt-dlp native [{output_name}]", flush=True)
     else:
-        # Non-HLS platforms: use aria2c for main download
+        # Non-HLS platforms: use aria2c for faster downloading
         cmd += [
             "--downloader", "aria2c",
             "--downloader-args",
             "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn "
             "--summary-interval=10 --retry-wait=5 --max-tries=10",
         ]
-        print(f"📡 Platform → yt-dlp + aria2c  [{output_name}]", flush=True)
+        print(f"📡 Platform → yt-dlp + aria2c [{output_name}]", flush=True)
 
     if referer:
         cmd += ["--referer", referer]
