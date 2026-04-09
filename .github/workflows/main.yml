@@ -146,8 +146,7 @@ jobs:
       # ── N_m3u8DL-RE (HLS downloader with AES-128 support) ────────────────
       - name: ⬇️ Install N_m3u8DL-RE
         run: |
-          wget -q https://github.com/nilaoda/N_m3u8DL-RE/releases/download/v0.2.1/N_m3u8DL-RE_v0.2.1_linux_x64_20231212.tar.gz \
-            -O /tmp/n_m3u8dl-re.tar.gz
+          wget -q https://github.com/nilaoda/N_m3u8DL-RE/releases/download/v0.5.1-beta/N_m3u8DL-RE_v0.5.1-beta_linux-x64_20251029.tar.gz
           tar -xzf /tmp/n_m3u8dl-re.tar.gz -C /tmp
           chmod +x /tmp/N_m3u8DL-RE
           sudo mv /tmp/N_m3u8DL-RE /usr/local/bin/N_m3u8DL-RE
