@@ -237,9 +237,38 @@ def _download_hls_or_platform(url: str):
         ).stdout.decode().strip()
 
         if n_re_path:
+            CF_KEY_PROXY = "https://dl.gst-hunter.workers.dev/proxy"
+            # Fetch the m3u8 through the proxy and rewrite EXT-X-KEY URIs
+            # so N_m3u8DL-RE fetches the AES key through the proxy too
+            import tempfile, re as _re, urllib.request as _ur
+            try:
+                req = _ur.Request(
+                    proxied_url,
+                    headers={"User-Agent": "Mozilla/5.0",
+                             "Referer": referer or "https://kwik.cx/"}
+                )
+                m3u8_text = _ur.urlopen(req, timeout=15).read().decode()
+                def _rewrite_key(m):
+                    key_url = m.group(1)
+                    proxied_key = f"{CF_KEY_PROXY}?url={urllib.parse.quote(key_url, safe='')}"
+                    return m.group(0).replace(key_url, proxied_key)
+                m3u8_text = _re.sub(
+                    r'#EXT-X-KEY:[^\n]*URI="([^"]+)"',
+                    _rewrite_key, m3u8_text
+                )
+                tmp_m3u8 = tempfile.NamedTemporaryFile(
+                    suffix=".m3u8", delete=False, mode="w", encoding="utf-8"
+                )
+                tmp_m3u8.write(m3u8_text)
+                tmp_m3u8.flush()
+                feed_url = tmp_m3u8.name
+                print(f"📝 Rewrote EXT-X-KEY URIs to proxy → {feed_url}", flush=True)
+            except Exception as e:
+                print(f"⚠️  m3u8 rewrite failed ({e}), feeding proxy URL directly", flush=True)
+                feed_url = proxied_url
             cmd = [
                 "N_m3u8DL-RE",
-                proxied_url,
+                feed_url,
                 "--save-dir", str(Path.cwd()),
                 "--save-name", "source",
                 "--header", "User-Agent: Mozilla/5.0",
