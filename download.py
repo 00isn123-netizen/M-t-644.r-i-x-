@@ -237,9 +237,7 @@ def _download_hls_or_platform(url: str):
         ).stdout.decode().strip()
 
         if n_re_path:
-            CF_KEY_PROXY = "https://dl.gst-hunter.workers.dev/proxy"
-            # Fetch the m3u8 through the proxy and rewrite EXT-X-KEY URIs
-            # so N_m3u8DL-RE fetches the AES key through the proxy too
+            # Fetch m3u8, extract the AES key directly, rewrite m3u8 to use local key file
             import tempfile, re as _re, urllib.request as _ur
             try:
                 req = _ur.Request(
@@ -248,23 +246,38 @@ def _download_hls_or_platform(url: str):
                              "Referer": referer or "https://kwik.cx/"}
                 )
                 m3u8_text = _ur.urlopen(req, timeout=15).read().decode()
-                def _rewrite_key(m):
-                    key_url = m.group(1)
-                    proxied_key = f"{CF_KEY_PROXY}?url={urllib.parse.quote(key_url, safe='')}"
-                    return m.group(0).replace(key_url, proxied_key)
-                m3u8_text = _re.sub(
-                    r'#EXT-X-KEY:[^\n]*URI="([^"]+)"',
-                    _rewrite_key, m3u8_text
-                )
-                tmp_m3u8 = tempfile.NamedTemporaryFile(
-                    suffix=".m3u8", delete=False, mode="w", encoding="utf-8"
-                )
+                print(f"📥 Fetched m3u8 ({len(m3u8_text)} bytes)", flush=True)
+
+                key_match = _re.search(r'#EXT-X-KEY:[^\n]*URI="([^"]+)"', m3u8_text)
+                if key_match:
+                    key_url = key_match.group(1)
+                    print(f"🔑 AES key URL: {key_url}", flush=True)
+                    key_obj = {"directUrl": key_url, "referer": referer or "https://kwik.cx/"}
+                    key_b64 = base64.urlsafe_b64encode(json.dumps(key_obj).encode()).decode().rstrip("=")
+                    key_proxy_url = f"{CF_WORKER}/stream/{key_b64}"
+                    key_req = _ur.Request(
+                        key_proxy_url,
+                        headers={"User-Agent": "Mozilla/5.0",
+                                 "Referer": referer or "https://kwik.cx/"}
+                    )
+                    key_bytes = _ur.urlopen(key_req, timeout=15).read()
+                    print(f"🔑 Fetched AES key ({len(key_bytes)} bytes)", flush=True)
+                    tmp_key = tempfile.NamedTemporaryFile(suffix=".key", delete=False, mode="wb")
+                    tmp_key.write(key_bytes)
+                    tmp_key.flush()
+                    local_key_uri = Path(tmp_key.name).as_uri()
+                    m3u8_text = m3u8_text.replace(f'URI="{key_url}"', f'URI="{local_key_uri}"')
+                    print(f"📝 Rewrote key URI → {local_key_uri}", flush=True)
+                else:
+                    print("ℹ️  No EXT-X-KEY in m3u8 (unencrypted)", flush=True)
+
+                tmp_m3u8 = tempfile.NamedTemporaryFile(suffix=".m3u8", delete=False, mode="w", encoding="utf-8")
                 tmp_m3u8.write(m3u8_text)
                 tmp_m3u8.flush()
                 feed_url = tmp_m3u8.name
-                print(f"📝 Rewrote EXT-X-KEY URIs to proxy → {feed_url}", flush=True)
+                print(f"📄 Local m3u8: {feed_url}", flush=True)
             except Exception as e:
-                print(f"⚠️  m3u8 rewrite failed ({e}), feeding proxy URL directly", flush=True)
+                print(f"⚠️  m3u8/key fetch failed ({e}), falling back to proxy URL", flush=True)
                 feed_url = proxied_url
             cmd = [
                 "N_m3u8DL-RE",
