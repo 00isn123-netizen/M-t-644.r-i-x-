@@ -251,21 +251,40 @@ def _download_hls_or_platform(url: str):
             print(f"📡 HLS stream → N_m3u8DL-RE [{output_name}]", flush=True)
             _run(cmd, label="N_m3u8DL-RE")
             # N_m3u8DL-RE may output .ts, .mp4, .mkv, or no extension (binary merge)
-            if not Path("source.mkv").exists():
+            # Find the output file
+            source_file = None
+            if Path("source.mkv").exists():
+                source_file = Path("source.mkv")
+            else:
                 for ext in ("ts", "mp4", ""):
                     candidate = Path("source" + ("." + ext if ext else ""))
                     if candidate.exists():
-                        print(f"🔀 Renaming {candidate} → source.mkv", flush=True)
-                        candidate.rename("source.mkv")
+                        source_file = candidate
                         break
-                else:
+                if source_file is None:
                     matches = sorted(Path.cwd().glob("source.*"))
                     if matches:
-                        print(f"🔀 Renaming {matches[0]} → source.mkv", flush=True)
-                        matches[0].rename("source.mkv")
-                    else:
-                        print("❌ N_m3u8DL-RE produced no output file", flush=True)
-                        sys.exit(1)
+                        source_file = matches[0]
+                if source_file is None:
+                    print("❌ N_m3u8DL-RE produced no output file", flush=True)
+                    sys.exit(1)
+            # Remux into a proper MKV container (binary merge output is raw TS)
+            if source_file.suffix.lower() != ".mkv" or source_file != Path("source.mkv"):
+                print(f"🔀 Remuxing {source_file} → source.mkv", flush=True)
+                _run([
+                    "ffmpeg", "-y", "-i", str(source_file),
+                    "-c", "copy", "-f", "matroska", "source.mkv"
+                ], label="ffmpeg-remux")
+                source_file.unlink(missing_ok=True)
+            elif source_file == Path("source.mkv"):
+                # Already named source.mkv but may be raw TS — remux in place
+                print("🔀 Remuxing source.mkv in place (raw TS → MKV)", flush=True)
+                Path("source.mkv").rename("source_raw.ts")
+                _run([
+                    "ffmpeg", "-y", "-i", "source_raw.ts",
+                    "-c", "copy", "-f", "matroska", "source.mkv"
+                ], label="ffmpeg-remux")
+                Path("source_raw.ts").unlink(missing_ok=True)
             return
         else:
             print("⚠️  N_m3u8DL-RE not found, falling back to yt-dlp + ffmpeg…", flush=True)
