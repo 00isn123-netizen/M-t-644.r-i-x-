@@ -143,6 +143,16 @@ jobs:
         if: steps.ytdlp-cache.outputs.cache-hit == 'true'
         run: chmod +x /usr/local/bin/yt-dlp && yt-dlp --version
 
+      # ── N_m3u8DL-RE (HLS downloader with AES-128 support) ────────────────
+      - name: ⬇️ Install N_m3u8DL-RE
+        run: |
+          wget -q https://github.com/nilaoda/N_m3u8DL-RE/releases/download/v0.2.1/N_m3u8DL-RE_v0.2.1_linux_x64_20231212.tar.gz \
+            -O /tmp/n_m3u8dl-re.tar.gz
+          tar -xzf /tmp/n_m3u8dl-re.tar.gz -C /tmp
+          chmod +x /tmp/N_m3u8DL-RE
+          sudo mv /tmp/N_m3u8DL-RE /usr/local/bin/N_m3u8DL-RE
+          echo "✅ N_m3u8DL-RE $(N_m3u8DL-RE --version 2>&1 | head -1) installed"
+
 # ── Cache: FFmpeg (Static Binary w/ SVT-AV1) ───────────────────────
       - name: 📦 Cache FFmpeg Binary
         id: ffmpeg-cache
