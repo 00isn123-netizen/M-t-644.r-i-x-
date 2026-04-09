@@ -216,36 +216,73 @@ def _download_hls_or_platform(url: str):
 
     referer, ffmpeg_headers = _detect_referer(url)
 
-    # uwucdn.top / kwik.cx HLS: Use kiwik-proxy CF Worker
+    # uwucdn.top / kwik.cx HLS: N_m3u8DL-RE with proxy, yt-dlp fallback
     if "uwucdn.top" in url or "kwik.cx" in url:
-        CF_WORKER = "https://kiwik-proxy.cloud-dl.workers.dev"
-        
-        # Decode first to prevent double encoding
-        decoded_url = urllib.parse.unquote(url)
-        encoded_url = urllib.parse.quote(decoded_url, safe='')
-        proxied_url = f"{CF_WORKER}/?url={encoded_url}"
-        
-        print(f"🌐 HLS → kiwik-proxy: {proxied_url[:80]}...", flush=True)
-        
-        # Use ffmpeg downloader which handles HLS better with custom headers
-        cmd = [
-            "yt-dlp",
-            "--add-header", "User-Agent:Mozilla/5.0",
-            "--add-header", "Referer:https://kwik.cx/",
-            "--extractor-args", "generic:impersonate",
-            "--merge-output-format", "mkv",
-            "-o", "source.mkv",
-            "--downloader", "ffmpeg",
-            "--hls-use-mpegts",
-            "--ffmpeg-location", "/usr/local/bin/ffmpeg",
-            "--downloader-args", "ffmpeg:-allowed_extensions ALL -protocol_whitelist file,http,https,tcp,tls,crypto -headers 'Referer: https://kwik.cx/\\r\\nUser-Agent: Mozilla/5.0\\r\\n'",
-            "--retries", "20",
-            "--fragment-retries", "100",
-            proxied_url,
-        ]
-        print(f"📡 HLS stream → yt-dlp + ffmpeg + kiwik-proxy [{output_name}]", flush=True)
-        _run(cmd, label="yt-dlp")
-        return
+        CF_WORKER = "https://dl.gst-hunter.workers.dev"
+
+        import base64
+        stream_key_obj = {
+            "directUrl": url,
+            "referer": referer or "https://kwik.cx/"
+        }
+        stream_key = base64.urlsafe_b64encode(
+            json.dumps(stream_key_obj).encode()
+        ).decode().rstrip('=')
+        proxied_url = f"{CF_WORKER}/stream/{stream_key}"
+
+        print(f"🌐 HLS → N_m3u8DL-RE + proxy: {proxied_url[:80]}...", flush=True)
+
+        n_re_path = subprocess.run(
+            ["which", "N_m3u8DL-RE"], capture_output=True
+        ).stdout.decode().strip()
+
+        if n_re_path:
+            cmd = [
+                "N_m3u8DL-RE",
+                proxied_url,
+                "--save-dir", str(Path.cwd()),
+                "--save-name", "source",
+                "--header", "User-Agent: Mozilla/5.0",
+                "--header", f"Referer: {referer or 'https://kwik.cx/'}",
+                "--thread-count", "32",
+                "--download-retry-count", "20",
+                "--del-after-done",
+            ]
+            print(f"📡 HLS stream → N_m3u8DL-RE [{output_name}]", flush=True)
+            _run(cmd, label="N_m3u8DL-RE")
+            # N_m3u8DL-RE outputs .ts or .mp4 — normalise to .mkv
+            for ext in ("ts", "mp4"):
+                candidate = Path("source." + ext)
+                if candidate.exists():
+                    candidate.rename("source.mkv")
+                    break
+            return
+        else:
+            print("⚠️  N_m3u8DL-RE not found, falling back to yt-dlp + ffmpeg…", flush=True)
+            # Fallback: yt-dlp via proxy
+            decoded_url = urllib.parse.unquote(url)
+            encoded_url = urllib.parse.quote(decoded_url, safe='')
+            yt_proxied  = f"https://kiwik-proxy.cloud-dl.workers.dev/?url={encoded_url}"
+            cmd = [
+                "yt-dlp",
+                "--add-header", "User-Agent:Mozilla/5.0",
+                "--add-header", "Referer:https://kwik.cx/",
+                "--extractor-args", "generic:impersonate",
+                "--merge-output-format", "mkv",
+                "-o", "source.mkv",
+                "--downloader", "ffmpeg",
+                "--hls-use-mpegts",
+                "--ffmpeg-location", "/usr/local/bin/ffmpeg",
+                "--downloader-args",
+                "ffmpeg:-allowed_extensions ALL -protocol_whitelist file,http,https,tcp,tls,crypto "
+                "-headers 'Referer: https://kwik.cx/\\r\\nUser-Agent: Mozilla/5.0\\r\\n'",
+                "--retries", "20",
+                "--fragment-retries", "100",
+                yt_proxied,
+            ]
+            print(f"📡 HLS stream → yt-dlp + ffmpeg fallback [{output_name}]", flush=True)
+            _run(cmd, label="yt-dlp")
+            return
 
     # kwik.cx direct MP4 (not HLS): CF-bypass proxy + aria2c
     if "kwik.cx" in url and not url.endswith(".m3u8"):
