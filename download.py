@@ -250,12 +250,22 @@ def _download_hls_or_platform(url: str):
             ]
             print(f"📡 HLS stream → N_m3u8DL-RE [{output_name}]", flush=True)
             _run(cmd, label="N_m3u8DL-RE")
-            # N_m3u8DL-RE outputs .ts or .mp4 — normalise to .mkv
-            for ext in ("ts", "mp4"):
-                candidate = Path("source." + ext)
-                if candidate.exists():
-                    candidate.rename("source.mkv")
-                    break
+            # N_m3u8DL-RE may output .ts, .mp4, .mkv, or no extension (binary merge)
+            if not Path("source.mkv").exists():
+                for ext in ("ts", "mp4", ""):
+                    candidate = Path("source" + ("." + ext if ext else ""))
+                    if candidate.exists():
+                        print(f"🔀 Renaming {candidate} → source.mkv", flush=True)
+                        candidate.rename("source.mkv")
+                        break
+                else:
+                    matches = sorted(Path.cwd().glob("source.*"))
+                    if matches:
+                        print(f"🔀 Renaming {matches[0]} → source.mkv", flush=True)
+                        matches[0].rename("source.mkv")
+                    else:
+                        print("❌ N_m3u8DL-RE produced no output file", flush=True)
+                        sys.exit(1)
             return
         else:
             print("⚠️  N_m3u8DL-RE not found, falling back to yt-dlp + ffmpeg…", flush=True)
