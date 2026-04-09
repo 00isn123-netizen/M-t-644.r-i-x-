@@ -289,6 +289,7 @@ def _download_hls_or_platform(url: str):
                 "--thread-count", "32",
                 "--download-retry-count", "20",
                 "--del-after-done",
+                "--mux-after-done", "format=mkv",
             ]
             print(f"📡 HLS stream → N_m3u8DL-RE [{output_name}]", flush=True)
             _run(cmd, label="N_m3u8DL-RE")
