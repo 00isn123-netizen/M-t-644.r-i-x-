@@ -37,7 +37,7 @@ from utils import (
 )
 
 # ─── Defaults ─────────────────────────────────────────────────────────────────
-DEFAULT_CRF     = 50
+DEFAULT_CRF     = 38
 DEFAULT_PRESET  = 4
 DEFAULT_WORKERS = os.cpu_count() or 1
 PROG_DIR        = Path("/tmp")
