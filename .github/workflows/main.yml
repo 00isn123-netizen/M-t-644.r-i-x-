@@ -21,10 +21,10 @@ on:
         default: 'encoded'
       chunk_count:
         description: 'Chunks to split into (more = more parallel runners)'
-        default: '10'
+        default: '19'
       crf:
         description: 'CRF value (lower = better quality, 35–55 anime)'
-        default: '50'
+        default: '38'
       preset:
         description: 'SVT-AV1 preset (0=best/slow … 13=fastest)'
         default: '4'
